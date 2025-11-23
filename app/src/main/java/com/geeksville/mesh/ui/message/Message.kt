@@ -46,6 +46,8 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.CallMissed
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -104,6 +106,13 @@ import com.geeksville.mesh.ui.sharing.SharedContactDialog
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import android.app.Activity
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import java.util.Locale
 
 private const val MESSAGE_CHARACTER_LIMIT_BYTES = 200
 private const val SNIPPET_CHARACTER_LIMIT = 50
@@ -149,6 +158,53 @@ internal fun MessageScreen(
     var sharedContact by rememberSaveable { mutableStateOf<Node?>(null) }
     val selectedMessageIds = rememberSaveable { mutableStateOf(emptySet<Long>()) }
     val messageInputState = rememberTextFieldState(message)
+
+    //    speech to text
+    val context = LocalContext.current
+    val activity = context as? Activity
+
+    val speechRecognizerLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                val text =
+                    result.data
+                        ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                        ?.firstOrNull()
+                if (!text.isNullOrBlank()) {
+                    // Option 1: replace existing text
+                    // messageInputState.setTextAndPlaceCursorAtEnd(text)
+
+                    // Option 2: append to existing text
+                    val newText =
+                        (messageInputState.text.toString() + " " + text)
+                            .trim()
+                            .limitBytes(MESSAGE_CHARACTER_LIMIT_BYTES)
+
+                    messageInputState.setTextAndPlaceCursorAtEnd(newText)
+                }
+            }
+        }
+
+    val startVoiceInput: () -> Unit = {
+        if (activity != null) {
+
+            val intent =
+                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(
+                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                    )
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                    putExtra(
+                        RecognizerIntent.EXTRA_PROMPT,
+                        context.getString(R.string.speak_now),
+                    )
+                }
+
+            speechRecognizerLauncher.launch(intent)
+        }
+    }
+    //    speech to text
 
     // Derived state, memoized for performance
     val channelInfo =
@@ -337,7 +393,8 @@ internal fun MessageScreen(
                 ourNode = ourNode,
             )
             MessageInput(
-                isEnabled = isConnected,
+//                isEnabled = isConnected,
+                isEnabled = true, //hard code for testing
                 textFieldState = messageInputState,
                 onSendMessage = {
                     val messageText = messageInputState.text.toString().trim()
@@ -345,6 +402,7 @@ internal fun MessageScreen(
                         onEvent(MessageScreenEvent.SendMessage(messageText, replyingTo?.packetId))
                     }
                 },
+                onStartVoiceInput = startVoiceInput,
             )
         }
     }
@@ -359,7 +417,9 @@ internal fun MessageScreen(
 @Composable
 private fun BoxScope.ScrollToBottomFab(coroutineScope: CoroutineScope, listState: LazyListState) {
     FloatingActionButton(
-        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(16.dp),
         onClick = {
             coroutineScope.launch {
                 // Assuming messages are ordered with the newest at index 0
@@ -391,7 +451,8 @@ private fun ReplySnippet(originalMessage: Message?, onClearReply: () -> Unit, ou
 
             Row(
                 modifier =
-                    Modifier.fillMaxWidth()
+                    Modifier
+                        .fillMaxWidth()
                         .clip(RoundedCornerShape(24.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                         .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -687,6 +748,7 @@ private fun MessageInput(
     modifier: Modifier = Modifier,
     maxByteSize: Int = MESSAGE_CHARACTER_LIMIT_BYTES,
     onSendMessage: () -> Unit,
+    onStartVoiceInput: () -> Unit,
 ) {
     val currentText = textFieldState.text.toString()
     val currentByteLength =
@@ -699,7 +761,9 @@ private fun MessageInput(
     val canSend = !isOverLimit && currentText.isNotEmpty() && isEnabled
 
     OutlinedTextField(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         state = textFieldState,
         lineLimits = TextFieldLineLimits.SingleLine,
         label = { Text(stringResource(R.string.message_input_label)) },
@@ -737,6 +801,20 @@ private fun MessageInput(
         // The current approach (show error, disable send) is generally preferred for UX.
         // If strict real-time byte trimming is required, it needs careful handling of
         // cursor position and multi-byte characters, likely outside simple inputTransformation.
+
+        // mic on the left
+        leadingIcon = {
+            IconButton(
+                onClick = { if (isEnabled) onStartVoiceInput() },
+                enabled = isEnabled,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = stringResource(R.string.speech_to_text),
+                )
+            }
+        },
+
         trailingIcon = {
             IconButton(onClick = { if (canSend) onSendMessage() }, enabled = canSend) {
                 Icon(
@@ -758,12 +836,14 @@ private fun MessageInputPreview() {
                     isEnabled = true,
                     textFieldState = rememberTextFieldState("Hello"),
                     onSendMessage = {},
+                    onStartVoiceInput = {},
                 )
                 Spacer(Modifier.size(16.dp))
                 MessageInput(
                     isEnabled = false,
                     textFieldState = rememberTextFieldState("Disabled"),
                     onSendMessage = {},
+                    onStartVoiceInput = {},
                 )
                 Spacer(Modifier.size(16.dp))
                 MessageInput(
@@ -774,6 +854,7 @@ private fun MessageInputPreview() {
                                 "and cause an error state display for the user to see clearly."
                         ),
                     onSendMessage = {},
+                    onStartVoiceInput = {},
                     maxByteSize = 50, // Test with a smaller limit
                 )
                 Spacer(Modifier.size(16.dp))
@@ -782,6 +863,7 @@ private fun MessageInputPreview() {
                     isEnabled = true,
                     textFieldState = rememberTextFieldState("こんにちは世界"), // Hello World in Japanese
                     onSendMessage = {},
+                    onStartVoiceInput = {},
                     maxByteSize = 10,
                     // Each char is 3 bytes, so "こん" (6 bytes) is ok, "こんに" (9 bytes) is ok, "こんにち"
                     // (12 bytes) is over
